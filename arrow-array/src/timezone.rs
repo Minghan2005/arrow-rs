@@ -85,6 +85,32 @@ mod private {
         Offset(FixedOffset),
     }
 
+    fn named_fixed_offset(tz: chrono_tz::Tz) -> Option<FixedOffset> {
+        let name = tz.name();
+        let is_fixed = matches!(
+            name,
+            "Etc/GMT"
+                | "Etc/GMT0"
+                | "Etc/Greenwich"
+                | "Etc/UCT"
+                | "Etc/UTC"
+                | "Etc/Universal"
+                | "Etc/Zulu"
+                | "GMT"
+                | "GMT+0"
+                | "GMT-0"
+                | "GMT0"
+                | "Greenwich"
+                | "UCT"
+                | "UTC"
+                | "Universal"
+                | "Zulu"
+        ) || name.starts_with("Etc/GMT+")
+            || name.starts_with("Etc/GMT-");
+
+        is_fixed.then(|| tz.offset_from_utc_datetime(&NaiveDateTime::default()).fix())
+    }
+
     impl FromStr for Tz {
         type Err = ArrowError;
 
@@ -94,6 +120,20 @@ mod private {
                 None => Ok(Self(TzInner::Timezone(tz.parse().map_err(|e| {
                     ArrowError::ParseError(format!("Invalid timezone \"{tz}\": {e}"))
                 })?))),
+            }
+        }
+    }
+
+    impl Tz {
+        /// Return this timezone's offset when it is constant for every instant.
+        ///
+        /// Recognizes explicit numeric offsets and IANA's fixed UTC/GMT names.
+        /// Other named zones return `None`, even if they do not currently observe
+        /// daylight saving time, because their historical offsets may differ.
+        pub fn fixed_offset(&self) -> Option<FixedOffset> {
+            match self.0 {
+                TzInner::Timezone(tz) => named_fixed_offset(tz),
+                TzInner::Offset(offset) => Some(offset),
             }
         }
     }
@@ -247,6 +287,37 @@ mod private {
                 assert_eq!(tz.to_string(), case);
             }
         }
+
+        #[test]
+        fn test_fixed_offset() {
+            let fixed_cases = [
+                ("+05:30", 5 * 60 * 60 + 30 * 60),
+                ("UTC", 0),
+                ("Etc/GMT+5", -5 * 60 * 60),
+                ("GMT", 0),
+            ];
+            for (name, expected_seconds) in fixed_cases {
+                let tz: Tz = name.parse().unwrap();
+                assert_eq!(tz.to_string(), name);
+                let offset = tz.offset_from_utc_datetime(&NaiveDateTime::default());
+                let round_trip = Tz::from_offset(&offset);
+                assert_eq!(round_trip.to_string(), name);
+                assert_eq!(round_trip.fixed_offset(), tz.fixed_offset());
+                assert_eq!(
+                    tz.fixed_offset().map(|offset| offset.local_minus_utc()),
+                    Some(expected_seconds)
+                );
+            }
+
+            for name in ["America/Los_Angeles", "Australia/Sydney", "Asia/Kolkata"] {
+                let tz: Tz = name.parse().unwrap();
+                assert_eq!(
+                    tz.fixed_offset(),
+                    None,
+                    "{name} observes date-dependent offsets"
+                );
+            }
+        }
     }
 }
 
@@ -276,6 +347,13 @@ mod private {
     /// An Arrow [`TimeZone`]
     #[derive(Debug, Copy, Clone)]
     pub struct Tz(FixedOffset);
+
+    impl Tz {
+        /// Return this timezone's constant offset.
+        pub fn fixed_offset(&self) -> Option<FixedOffset> {
+            Some(self.0)
+        }
+    }
 
     impl FromStr for Tz {
         type Err = ArrowError;
@@ -347,6 +425,7 @@ mod tests {
         );
 
         let tz = "+0900".parse::<Tz>().unwrap();
+        assert_eq!(tz.fixed_offset(), FixedOffset::east_opt(9 * 60 * 60));
         assert_eq!(
             tz.offset_from_utc_date(&t).fix().local_minus_utc(),
             9 * 60 * 60

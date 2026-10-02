@@ -610,12 +610,26 @@ fn make_duration_array(array: &PrimitiveArray<Int64Type>, unit: TimeUnit) -> Arr
     }
 }
 
+fn parse_timezone_with_fixed_offset(
+    tz: Option<&str>,
+) -> Result<Option<(Tz, Option<FixedOffset>)>, ArrowError> {
+    tz.map(|name| {
+        let tz = name.parse::<Tz>()?;
+        let fixed_offset = tz.fixed_offset();
+        Ok((tz, fixed_offset))
+    })
+    .transpose()
+}
+
 fn as_time_res_with_timezone<T: ArrowPrimitiveType>(
     v: i64,
-    tz: Option<Tz>,
+    tz: Option<(Tz, Option<FixedOffset>)>,
 ) -> Result<NaiveTime, ArrowError> {
     let time = match tz {
-        Some(tz) => as_datetime_with_timezone::<T>(v, tz).map(|d| d.time()),
+        Some((_, Some(offset))) => {
+            as_datetime::<T>(v).map(|utc| offset.from_utc_datetime(&utc).time())
+        }
+        Some((tz, None)) => as_datetime_with_timezone::<T>(v, tz).map(|d| d.time()),
         None => as_datetime::<T>(v).map(|d| d.time()),
     };
 
@@ -641,10 +655,15 @@ fn timestamp_to_date32<T: ArrowTimestampType>(
     let array: Date32Array = match array.timezone() {
         Some(tz) => {
             let tz: Tz = tz.parse()?;
+            let fixed_offset = tz.fixed_offset();
             array.try_unary(|x| {
-                as_datetime_with_timezone::<T>(x, tz)
-                    .ok_or_else(|| err(x))
-                    .map(|d| Date32Type::from_naive_date(d.date_naive()))
+                let date = match fixed_offset {
+                    Some(offset) => {
+                        as_datetime::<T>(x).map(|utc| offset.from_utc_datetime(&utc).date_naive())
+                    }
+                    None => as_datetime_with_timezone::<T>(x, tz).map(|d| d.date_naive()),
+                };
+                date.ok_or_else(|| err(x)).map(Date32Type::from_naive_date)
             })?
         }
         None => array.try_unary(|x| {
@@ -1994,7 +2013,7 @@ pub fn cast_with_options(
                 .unary::<_, Date64Type>(|x| x / (NANOSECONDS / MILLISECONDS)),
         )),
         (Timestamp(TimeUnit::Second, tz), Time64(TimeUnit::Microsecond)) => {
-            let tz = tz.as_ref().map(|tz| tz.parse()).transpose()?;
+            let tz = parse_timezone_with_fixed_offset(tz.as_deref())?;
             Ok(Arc::new(
                 array
                     .as_primitive::<TimestampSecondType>()
@@ -2006,7 +2025,7 @@ pub fn cast_with_options(
             ))
         }
         (Timestamp(TimeUnit::Second, tz), Time64(TimeUnit::Nanosecond)) => {
-            let tz = tz.as_ref().map(|tz| tz.parse()).transpose()?;
+            let tz = parse_timezone_with_fixed_offset(tz.as_deref())?;
             Ok(Arc::new(
                 array
                     .as_primitive::<TimestampSecondType>()
@@ -2018,7 +2037,7 @@ pub fn cast_with_options(
             ))
         }
         (Timestamp(TimeUnit::Millisecond, tz), Time64(TimeUnit::Microsecond)) => {
-            let tz = tz.as_ref().map(|tz| tz.parse()).transpose()?;
+            let tz = parse_timezone_with_fixed_offset(tz.as_deref())?;
             Ok(Arc::new(
                 array
                     .as_primitive::<TimestampMillisecondType>()
@@ -2030,7 +2049,7 @@ pub fn cast_with_options(
             ))
         }
         (Timestamp(TimeUnit::Millisecond, tz), Time64(TimeUnit::Nanosecond)) => {
-            let tz = tz.as_ref().map(|tz| tz.parse()).transpose()?;
+            let tz = parse_timezone_with_fixed_offset(tz.as_deref())?;
             Ok(Arc::new(
                 array
                     .as_primitive::<TimestampMillisecondType>()
@@ -2042,7 +2061,7 @@ pub fn cast_with_options(
             ))
         }
         (Timestamp(TimeUnit::Microsecond, tz), Time64(TimeUnit::Microsecond)) => {
-            let tz = tz.as_ref().map(|tz| tz.parse()).transpose()?;
+            let tz = parse_timezone_with_fixed_offset(tz.as_deref())?;
             Ok(Arc::new(
                 array
                     .as_primitive::<TimestampMicrosecondType>()
@@ -2054,7 +2073,7 @@ pub fn cast_with_options(
             ))
         }
         (Timestamp(TimeUnit::Microsecond, tz), Time64(TimeUnit::Nanosecond)) => {
-            let tz = tz.as_ref().map(|tz| tz.parse()).transpose()?;
+            let tz = parse_timezone_with_fixed_offset(tz.as_deref())?;
             Ok(Arc::new(
                 array
                     .as_primitive::<TimestampMicrosecondType>()
@@ -2066,7 +2085,7 @@ pub fn cast_with_options(
             ))
         }
         (Timestamp(TimeUnit::Nanosecond, tz), Time64(TimeUnit::Microsecond)) => {
-            let tz = tz.as_ref().map(|tz| tz.parse()).transpose()?;
+            let tz = parse_timezone_with_fixed_offset(tz.as_deref())?;
             Ok(Arc::new(
                 array
                     .as_primitive::<TimestampNanosecondType>()
@@ -2078,7 +2097,7 @@ pub fn cast_with_options(
             ))
         }
         (Timestamp(TimeUnit::Nanosecond, tz), Time64(TimeUnit::Nanosecond)) => {
-            let tz = tz.as_ref().map(|tz| tz.parse()).transpose()?;
+            let tz = parse_timezone_with_fixed_offset(tz.as_deref())?;
             Ok(Arc::new(
                 array
                     .as_primitive::<TimestampNanosecondType>()
@@ -2090,7 +2109,7 @@ pub fn cast_with_options(
             ))
         }
         (Timestamp(TimeUnit::Second, tz), Time32(TimeUnit::Second)) => {
-            let tz = tz.as_ref().map(|tz| tz.parse()).transpose()?;
+            let tz = parse_timezone_with_fixed_offset(tz.as_deref())?;
             Ok(Arc::new(
                 array
                     .as_primitive::<TimestampSecondType>()
@@ -2102,7 +2121,7 @@ pub fn cast_with_options(
             ))
         }
         (Timestamp(TimeUnit::Second, tz), Time32(TimeUnit::Millisecond)) => {
-            let tz = tz.as_ref().map(|tz| tz.parse()).transpose()?;
+            let tz = parse_timezone_with_fixed_offset(tz.as_deref())?;
             Ok(Arc::new(
                 array
                     .as_primitive::<TimestampSecondType>()
@@ -2114,7 +2133,7 @@ pub fn cast_with_options(
             ))
         }
         (Timestamp(TimeUnit::Millisecond, tz), Time32(TimeUnit::Second)) => {
-            let tz = tz.as_ref().map(|tz| tz.parse()).transpose()?;
+            let tz = parse_timezone_with_fixed_offset(tz.as_deref())?;
             Ok(Arc::new(
                 array
                     .as_primitive::<TimestampMillisecondType>()
@@ -2126,7 +2145,7 @@ pub fn cast_with_options(
             ))
         }
         (Timestamp(TimeUnit::Millisecond, tz), Time32(TimeUnit::Millisecond)) => {
-            let tz = tz.as_ref().map(|tz| tz.parse()).transpose()?;
+            let tz = parse_timezone_with_fixed_offset(tz.as_deref())?;
             Ok(Arc::new(
                 array
                     .as_primitive::<TimestampMillisecondType>()
@@ -2138,7 +2157,7 @@ pub fn cast_with_options(
             ))
         }
         (Timestamp(TimeUnit::Microsecond, tz), Time32(TimeUnit::Second)) => {
-            let tz = tz.as_ref().map(|tz| tz.parse()).transpose()?;
+            let tz = parse_timezone_with_fixed_offset(tz.as_deref())?;
             Ok(Arc::new(
                 array
                     .as_primitive::<TimestampMicrosecondType>()
@@ -2150,7 +2169,7 @@ pub fn cast_with_options(
             ))
         }
         (Timestamp(TimeUnit::Microsecond, tz), Time32(TimeUnit::Millisecond)) => {
-            let tz = tz.as_ref().map(|tz| tz.parse()).transpose()?;
+            let tz = parse_timezone_with_fixed_offset(tz.as_deref())?;
             Ok(Arc::new(
                 array
                     .as_primitive::<TimestampMicrosecondType>()
@@ -2162,7 +2181,7 @@ pub fn cast_with_options(
             ))
         }
         (Timestamp(TimeUnit::Nanosecond, tz), Time32(TimeUnit::Second)) => {
-            let tz = tz.as_ref().map(|tz| tz.parse()).transpose()?;
+            let tz = parse_timezone_with_fixed_offset(tz.as_deref())?;
             Ok(Arc::new(
                 array
                     .as_primitive::<TimestampNanosecondType>()
@@ -2174,7 +2193,7 @@ pub fn cast_with_options(
             ))
         }
         (Timestamp(TimeUnit::Nanosecond, tz), Time32(TimeUnit::Millisecond)) => {
-            let tz = tz.as_ref().map(|tz| tz.parse()).transpose()?;
+            let tz = parse_timezone_with_fixed_offset(tz.as_deref())?;
             Ok(Arc::new(
                 array
                     .as_primitive::<TimestampNanosecondType>()
@@ -2709,9 +2728,13 @@ fn adjust_timestamp_to_timezone<T: ArrowTimestampType>(
     to_tz: &Tz,
     cast_options: &CastOptions,
 ) -> Result<PrimitiveArray<Int64Type>, ArrowError> {
+    let fixed_offset = to_tz.fixed_offset();
     let adjust = |o| {
         let local = as_datetime::<T>(o)?;
-        let offset = resolve_local_offset(to_tz, &local)?;
+        let offset = match fixed_offset {
+            Some(offset) => offset,
+            None => resolve_local_offset(to_tz, &local)?,
+        };
         T::from_naive_datetime(local - offset, None)
     };
     let adjusted = if cast_options.safe {
@@ -7289,6 +7312,51 @@ mod tests {
         assert_eq!(c.value(1), instant_seconds(2024, 11, 3, 1, 30, 8));
         assert_eq!(c.value(2), instant_seconds(2024, 3, 10, 2, 30, 8));
         assert!(c.is_null(3));
+
+        let named_type = DataType::Timestamp(TimeUnit::Second, Some("Etc/GMT-8".into()));
+        let named = cast(&array, &named_type).unwrap();
+        let named = named.as_primitive::<TimestampSecondType>();
+        assert_eq!(named.value(0), instant_seconds(2024, 11, 1, 0, 0, 8));
+        assert_eq!(named.value(1), instant_seconds(2024, 11, 3, 1, 30, 8));
+        assert_eq!(named.value(2), instant_seconds(2024, 3, 10, 2, 30, 8));
+    }
+
+    #[test]
+    fn test_cast_timestamp_to_time_at_datetime_bounds() {
+        for (value, timezone) in [
+            (NaiveDateTime::MAX.and_utc().timestamp(), "+01:00"),
+            (NaiveDateTime::MIN.and_utc().timestamp(), "-01:00"),
+        ] {
+            let tz: Tz = timezone.parse().unwrap();
+            let expected = as_datetime_with_timezone::<TimestampSecondType>(value, tz)
+                .unwrap()
+                .time();
+            let array = TimestampSecondArray::from(vec![Some(value), None]).with_timezone(timezone);
+            let actual = cast(&array, &DataType::Time32(TimeUnit::Second)).unwrap();
+            let actual = actual.as_primitive::<Time32SecondType>();
+            assert_eq!(
+                actual.value(0),
+                chrono::Timelike::num_seconds_from_midnight(&expected) as i32
+            );
+            assert!(actual.is_null(1));
+        }
+    }
+
+    #[test]
+    fn test_cast_timestamp_to_date_and_time_with_named_fixed_offset() {
+        let timestamp = TimestampSecondArray::from(vec![Some(naive_seconds(2024, 1, 1, 2, 0))])
+            .with_timezone("Etc/GMT+5");
+
+        let date = cast(&timestamp, &Date32).unwrap();
+        let date = date.as_primitive::<Date32Type>();
+        assert_eq!(
+            date.value(0),
+            Date32Type::from_naive_date(NaiveDate::from_ymd_opt(2023, 12, 31).unwrap())
+        );
+
+        let time = cast(&timestamp, &DataType::Time32(TimeUnit::Second)).unwrap();
+        let time = time.as_primitive::<Time32SecondType>();
+        assert_eq!(time.value(0), 21 * 60 * 60);
     }
 
     #[test]
